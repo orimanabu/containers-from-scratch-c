@@ -28,21 +28,21 @@ struct cmd_arg {
 static int chroot_with_chroot(char *new_root)
 {
 
-	printf("* chroot\n");
+	printf("** chroot\n");
 	int ret_chroot = chroot(new_root);
 	if (ret_chroot == -1) {
 		printf("chroot failed: %s\n", strerror(errno));
 		return -1;
 	}
 
-	printf("* chdir /\n");
+	printf("** chdir /\n");
 	int ret_chdir = chdir("/");
 	if (ret_chdir == -1) {
 		printf("chdir failed: %s\n", strerror(errno));
 		return -1;
 	}
 
-	printf("* mount /proc\n");
+	printf("** mount /proc\n");
 	int ret_mount = mount("proc", "/proc", "proc", 0, NULL);
 	if (ret_mount == -1) {
 		printf("mount failed: %s\n", strerror(errno));
@@ -59,10 +59,6 @@ static int pivot_root(const char *new_root, const char *put_old)
 
 static int chroot_with_pivot_root(char *new_root)
 {
-	/*
-	char        **args = arg;
-	char        *new_root = args[0];
-	*/
 	char path[PATH_MAX];
 	const char *put_old = "/old_root";
 	struct stat st;
@@ -75,7 +71,7 @@ static int chroot_with_pivot_root(char *new_root)
 		err(EXIT_FAILURE, "mount-MS_PRIVATE");
 
 	/* Ensure that 'new_root' is a mount point. */
-	printf("* bind mount new_root\n");
+	printf("** bind mount new_root\n");
 	if (mount(new_root, new_root, NULL, MS_BIND, NULL) == -1)
 		err(EXIT_FAILURE, "mount-MS_BIND");
 
@@ -93,37 +89,39 @@ static int chroot_with_pivot_root(char *new_root)
 	} else {
 		printf("XXX %s exists\n", path);
 		if (S_ISDIR(st.st_mode)) {
-			printf("XXX %s is directory\n", path);
+			printf("XXX %s is a directory\n", path);
 		} else {
-			err(EXIT_FAILURE, "XXX %s is a directory\n", path);
+			err(EXIT_FAILURE, "XXX %s is not a directory\n", path);
 		}
 	}
 
 	/* And pivot the root filesystem. */
-	printf("* pivot_root/\n");
+	printf("** pivot_root/\n");
 	if (pivot_root(new_root, path) == -1)
 		err(EXIT_FAILURE, "pivot_root");
 
 	/* Switch the current working directory to "/". */
-	printf("* chddir /\n");
+	printf("** chddir /\n");
 	if (chdir("/") == -1)
 		err(EXIT_FAILURE, "chdir");
 
-	printf("* mount /proc\n");
+	printf("** mount /proc\n");
 	int ret_mount = mount("proc", "/proc", "proc", 0, NULL);
 	if (ret_mount == -1) {
 		printf("mount failed: %s\n", strerror(errno));
 		return -1;
 	}
 
+#if 0
 	/* Unmount old root and remove mount point. */
-	printf("* unmount old_root\n");
+	printf("** unmount old_root\n");
 	if (umount2(put_old, MNT_DETACH) == -1)
 		perror("umount2");
 
-	printf("* rmdir old_root\n");
+	printf("** rmdir old_root\n");
 	if (rmdir(put_old) == -1)
 		perror("rmdir");
+#endif
 }
 #endif
 
@@ -131,7 +129,7 @@ int run_in_misc_ns(void *arg)
 {
 	struct cmd_arg *cmdarg = (struct cmd_arg *)arg;
 
-	printf("Child2 (run_in_misc_ns): PID = %d, PPID = %d\n", getpid(), getppid());
+	printf("* Running in UTS/PID/Mount namespace: PID = %d, PPID = %d\n", getpid(), getppid());
 
 	int ret;
 #if 0
@@ -143,6 +141,7 @@ int run_in_misc_ns(void *arg)
 		return ret;
 	}
 
+	/* We can change hostname since we are already in UTS namespace. */
 	if (sethostname(HOSTNAME, strlen(HOSTNAME)) == -1) {
 		perror("sethostname");
 		return -1;
@@ -151,22 +150,18 @@ int run_in_misc_ns(void *arg)
 	execvp(cmdarg->argv[1], &(cmdarg->argv[1]));
 	perror("execv failed");
 	return -1;
-
-	return 0;
 }
 
 int run_in_user_ns(void *arg)
 {
 	struct cmd_arg *cmdarg = (struct cmd_arg *)arg;
-
-	printf("Child1 (run_in_user_ns): PID = %d, PPID = %d\n", getpid(), getppid());
-	printf("  argc: %d\n", cmdarg->argc);
-
 	const char *uid_map = "0 1000 1\n";
 	const char *gid_map = "0 1000 1\n";
 	FILE *file;
 
-	printf("* create /proc/self/uid_map\n");
+	printf("* Running in User namespace: PID = %d, PPID = %d\n", getpid(), getppid());
+
+	printf("** create /proc/self/uid_map\n");
 	if ((file = fopen("/proc/self/uid_map", "w")) == NULL) {
 		perror("Failed to open /proc/self/uid_map");
 		return -1;
@@ -178,7 +173,7 @@ int run_in_user_ns(void *arg)
 	}
 	fclose(file);
 
-	printf("* write 'deny' to /proc/self/setgroups\n");
+	printf("** write 'deny' to /proc/self/setgroups\n");
 	if ((file = fopen("/proc/self/setgroups", "w")) == NULL) {
 		perror("Failed to open /proc/self/setgroups");
 		return -1;
@@ -190,7 +185,7 @@ int run_in_user_ns(void *arg)
 	}
 	fclose(file);
 
-	printf("* create /proc/self/gid_map\n");
+	printf("** create /proc/self/gid_map\n");
 	if ((file = fopen("/proc/self/gid_map", "w")) == NULL) {
 		perror("Failed to open /proc/self/gid_map");
 		return -1;
@@ -217,7 +212,7 @@ int run_in_user_ns(void *arg)
 	waitpid(pid2, NULL, 0);
 	free(stack2);
 
-	printf("Child1: Exiting after Child2.\n");
+	printf("* Exited from UTS/PID/Mount namespace.\n");
 	return 0;
 }
 
@@ -240,6 +235,6 @@ int main(int argc, char *argv[])
 	waitpid(pid1, NULL, 0);
 	free(stack1);
 
-	printf("Parent: children have exited.\n");
+	printf("* Exited from User namespace.\n");
 	return 0;
 }
