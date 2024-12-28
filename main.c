@@ -52,7 +52,7 @@ static int chroot_with_chroot(char *new_root)
 	return 0;
 }
 #else
-static int pivot_root(const char *new_root, const char *put_old)
+static long int pivot_root(const char *new_root, const char *put_old)
 {
 	return syscall(SYS_pivot_root, new_root, put_old);
 }
@@ -122,6 +122,7 @@ static int chroot_with_pivot_root(char *new_root)
 	if (rmdir(put_old) == -1)
 		perror("rmdir");
 #endif
+	return 0;
 }
 #endif
 
