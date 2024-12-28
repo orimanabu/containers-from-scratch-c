@@ -24,7 +24,6 @@ struct cmd_arg {
 	char **argv;
 };
 
-#if 0
 static int chroot_with_chroot(char *new_root)
 {
 
@@ -51,7 +50,7 @@ static int chroot_with_chroot(char *new_root)
 
 	return 0;
 }
-#else
+
 static long int pivot_root(const char *new_root, const char *put_old)
 {
 	return syscall(SYS_pivot_root, new_root, put_old);
@@ -124,7 +123,6 @@ static int chroot_with_pivot_root(char *new_root)
 #endif
 	return 0;
 }
-#endif
 
 int run_in_misc_ns(void *arg)
 {
@@ -133,11 +131,10 @@ int run_in_misc_ns(void *arg)
 	printf("* Running in UTS/PID/Mount namespace: PID = %d, PPID = %d\n", getpid(), getppid());
 
 	int ret;
-#if 0
-	ret = chroot_with_chroot(ROOTFS);
-#else
+
+	// ret = chroot_with_chroot(ROOTFS);
 	ret = chroot_with_pivot_root(ROOTFS);
-#endif
+
 	if (ret == -1) {
 		return ret;
 	}
