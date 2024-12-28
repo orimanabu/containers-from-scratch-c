@@ -1,52 +1,155 @@
 #define _GNU_SOURCE
 
-#include <sched.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <sys/types.h>
-#include <stdlib.h>
-#include <sys/wait.h>
-#include <errno.h>
-#include <string.h>
-#include <sys/mount.h>
 #include <fcntl.h>
+#include <err.h>
+#include <errno.h>
+#include <limits.h>
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #define STACK_SIZE 1024 * 1024
 #define ROOTFS "/home/ori/ubuntu-rootfs"
+#define HOSTNAME "mycontainer"
 
 struct cmd_arg {
 	int argc;
 	char **argv;
 };
 
-int run_in_misc_ns()
+#if 0
+static int chroot_with_chroot(char *new_root)
 {
-	printf("Child2 (run_in_misc_ns): PID = %d, PPID = %d\n", getpid(), getppid());
 
 	printf("* chroot\n");
-	int ret_chroot = chroot(ROOTFS);
+	int ret_chroot = chroot(new_root);
 	if (ret_chroot == -1) {
 		printf("chroot failed: %s\n", strerror(errno));
-		return 1;
+		return -1;
 	}
 
 	printf("* chdir /\n");
 	int ret_chdir = chdir("/");
 	if (ret_chdir == -1) {
 		printf("chdir failed: %s\n", strerror(errno));
-		return 1;
+		return -1;
 	}
 
 	printf("* mount /proc\n");
 	int ret_mount = mount("proc", "/proc", "proc", 0, NULL);
 	if (ret_mount == -1) {
 		printf("mount failed: %s\n", strerror(errno));
-		return 1;
+		return -1;
 	}
 
-	execlp("bash", "bash", NULL);
-	perror("execlp failed");
+	return 0;
+}
+#else
+static int pivot_root(const char *new_root, const char *put_old)
+{
+	return syscall(SYS_pivot_root, new_root, put_old);
+}
+
+static int chroot_with_pivot_root(char *new_root)
+{
+	/*
+	char        **args = arg;
+	char        *new_root = args[0];
+	*/
+	char path[PATH_MAX];
+	const char *put_old = "/old_root";
+	struct stat st;
+
+	/* Ensure that 'new_root' and its parent mount don't have
+	   shared propagation (which would cause pivot_root() to
+	   return an error), and prevent propagation of mount
+	   events to the initial mount namespace. */
+	if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1)
+		err(EXIT_FAILURE, "mount-MS_PRIVATE");
+
+	/* Ensure that 'new_root' is a mount point. */
+	printf("* bind mount new_root\n");
+	if (mount(new_root, new_root, NULL, MS_BIND, NULL) == -1)
+		err(EXIT_FAILURE, "mount-MS_BIND");
+
+	/* Create directory to which old root will be pivoted. */
+	snprintf(path, sizeof(path), "%s/%s", new_root, put_old);
+	if (stat(path, &st) == -1) {
+		if (errno == ENOENT) {
+			printf("XXX %s does not exist, creating...\n", path);
+			if (mkdir(path, 0777) == -1) {
+				err(EXIT_FAILURE, "mkdir");
+			}
+		} else {
+			err(EXIT_FAILURE, "stat");
+		}
+	} else {
+		printf("XXX %s exists\n", path);
+		if (S_ISDIR(st.st_mode)) {
+			printf("XXX %s is directory\n", path);
+		} else {
+			err(EXIT_FAILURE, "XXX %s is a directory\n", path);
+		}
+	}
+
+	/* And pivot the root filesystem. */
+	printf("* pivot_root/\n");
+	if (pivot_root(new_root, path) == -1)
+		err(EXIT_FAILURE, "pivot_root");
+
+	/* Switch the current working directory to "/". */
+	printf("* chddir /\n");
+	if (chdir("/") == -1)
+		err(EXIT_FAILURE, "chdir");
+
+	printf("* mount /proc\n");
+	int ret_mount = mount("proc", "/proc", "proc", 0, NULL);
+	if (ret_mount == -1) {
+		printf("mount failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	/* Unmount old root and remove mount point. */
+	printf("* unmount old_root\n");
+	if (umount2(put_old, MNT_DETACH) == -1)
+		perror("umount2");
+
+	printf("* rmdir old_root\n");
+	if (rmdir(put_old) == -1)
+		perror("rmdir");
+}
+#endif
+
+int run_in_misc_ns(void *arg)
+{
+	struct cmd_arg *cmdarg = (struct cmd_arg *)arg;
+
+	printf("Child2 (run_in_misc_ns): PID = %d, PPID = %d\n", getpid(), getppid());
+
+	int ret;
+#if 0
+	ret = chroot_with_chroot(ROOTFS);
+#else
+	ret = chroot_with_pivot_root(ROOTFS);
+#endif
+	if (ret == -1) {
+		return ret;
+	}
+
+	if (sethostname(HOSTNAME, strlen(HOSTNAME)) == -1) {
+		perror("sethostname");
+		return -1;
+	}
+
+	execvp(cmdarg->argv[1], &(cmdarg->argv[1]));
+	perror("execv failed");
 	return -1;
 
 	return 0;
@@ -105,7 +208,7 @@ int run_in_user_ns(void *arg)
 		exit(EXIT_FAILURE);
 	}
 
-	pid_t pid2 = clone(run_in_misc_ns, stack2 + STACK_SIZE, CLONE_NEWUTS|CLONE_NEWPID|CLONE_NEWNS|SIGCHLD, NULL);
+	pid_t pid2 = clone(run_in_misc_ns, stack2 + STACK_SIZE, CLONE_NEWUTS|CLONE_NEWPID|CLONE_NEWNS|SIGCHLD, cmdarg);
 	if (pid2 == -1) {
 		perror("clone child2");
 		exit(EXIT_FAILURE);
